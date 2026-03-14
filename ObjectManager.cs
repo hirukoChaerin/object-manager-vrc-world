@@ -1,42 +1,61 @@
 using UdonSharp;
 using UnityEngine;
+using UnityEngine.UI;
 using VRC.SDKBase;
 using VRC.Udon;
 
 /// <summary>
-/// ObjectManager - VRChat World Script (UdonSharp)
-/// 
-/// Funcionalidad:
-///   - Botón 1 (ResetPositions): Reposiciona todos los objetos de la lista
-///     a su posición y rotación original (la que tenían al iniciar el mundo).
-///   - Botón 2 (ToggleVisibility): Oculta o muestra todos los objetos de la lista.
-///   - Todo se sincroniza globalmente para todos los jugadores.
+/// ObjectManager v2 - Paso a paso con contadores
 ///
-/// Configuración en Unity:
-///   1. Crea un GameObject vacío y añade este script (UdonBehaviour).
-///   2. En el Inspector, arrastra los objetos (platos, vasos, etc.) al array "Objects".
-///   3. Crea dos botones (UI Button o VRC Interact):
-///      - Botón Reset  → apunta al método ResetPositions()
-///      - Botón Toggle → apunta al método ToggleVisibility()
-///   4. Asegúrate de que el objeto con este script tenga un VRC Object Sync
-///      o que los objetos hijos lo tengan si necesitan sincronización de físicas.
+/// Botón Reset: Cada click resetea UN objeto. Al llegar al final, vuelve al inicio.
+/// Botón Toggle: Cada click oculta UN objeto. Al terminar la lista, cambia de modo
+///               y empieza a mostrar uno por uno.
+///
+/// Canvas: Muestra contadores y progreso en tiempo real.
+///
+/// Configuración:
+///   1. Arrastra los objetos al array "Objects".
+///   2. Arrastra los componentes Text (UI) a los campos del Inspector.
+///   3. Conecta los botones 3D (ResetButton / ToggleButton).
 /// </summary>
 [UdonBehaviourSyncMode(BehaviourSyncMode.Manual)]
 public class ObjectManager : UdonSharpBehaviour
 {
-    [Header("Lista de Objetos")]
-    [Tooltip("Arrastra aquí los GameObjects que quieres controlar")]
+    [Header("=== Lista de Objetos ===")]
+    [Tooltip("Arrastra aquí los GameObjects (platos, vasos, etc.)")]
     public GameObject[] objects;
 
-    // --- Estado sincronizado ---
-    [UdonSynced] private bool isHidden = false;
-    [UdonSynced] private bool requestReset = false;
-    [UdonSynced] private int syncCounter = 0;
+    [Header("=== UI Canvas - Textos ===")]
+    [Tooltip("Muestra cuántos ciclos completos de Reset se han hecho")]
+    public Text resetCounterText;
 
-    // --- Datos locales (posiciones/rotaciones originales) ---
+    [Tooltip("Muestra el progreso del Reset (ej: 3/8)")]
+    public Text resetProgressText;
+
+    [Tooltip("Muestra cuántos ciclos completos de Toggle se han hecho")]
+    public Text toggleCounterText;
+
+    [Tooltip("Muestra el progreso del Toggle (ej: Ocultando 3/8)")]
+    public Text toggleProgressText;
+
+    [Tooltip("Muestra el nombre del último objeto afectado")]
+    public Text lastObjectText;
+
+    // --- Estado sincronizado ---
+    [UdonSynced] private int resetIndex = 0;
+    [UdonSynced] private int resetTotalCount = 0;
+
+    [UdonSynced] private int toggleIndex = 0;
+    [UdonSynced] private int toggleTotalCount = 0;
+    [UdonSynced] private bool isHidingPhase = true;
+
+    [UdonSynced] private int syncVersion = 0;
+    [UdonSynced] private string lastAffectedName = "";
+
+    // --- Datos locales ---
     private Vector3[] originalPositions;
     private Quaternion[] originalRotations;
-    private int lastSyncCounter = 0;
+    private int lastSyncVersion = 0;
 
     // =========================================================
     //  INICIALIZACIÓN
@@ -45,11 +64,10 @@ public class ObjectManager : UdonSharpBehaviour
     {
         if (objects == null || objects.Length == 0)
         {
-            Debug.LogWarning("[ObjectManager] No hay objetos asignados en la lista.");
+            Debug.LogWarning("[ObjectManager] No hay objetos asignados.");
             return;
         }
 
-        // Guardar posiciones y rotaciones originales
         originalPositions = new Vector3[objects.Length];
         originalRotations = new Quaternion[objects.Length];
 
@@ -61,73 +79,99 @@ public class ObjectManager : UdonSharpBehaviour
                 originalRotations[i] = objects[i].transform.rotation;
             }
         }
+
+        _UpdateUI();
     }
 
     // =========================================================
-    //  BOTÓN 1: RESETEAR POSICIONES (Global)
+    //  BOTÓN 1: RESETEAR POSICIÓN (uno por uno)
     // =========================================================
-    /// <summary>
-    /// Llama este método desde un UI Button o un Interact Trigger.
-    /// Resetea la posición de todos los objetos a su estado original.
-    /// </summary>
-    public void ResetPositions()
+    public void StepReset()
     {
-        // Tomar ownership para poder sincronizar
+        if (objects == null || objects.Length == 0) return;
+
         Networking.SetOwner(Networking.LocalPlayer, gameObject);
 
-        requestReset = true;
-        syncCounter++;
-        RequestSerialization();
+        // Resetear el objeto en el índice actual
+        _ResetSingleObject(resetIndex);
 
-        // Aplicar localmente de inmediato para feedback instantáneo
-        _ApplyReset();
+        // Guardar nombre del objeto afectado
+        if (objects[resetIndex] != null)
+        {
+            lastAffectedName = "[R] " + objects[resetIndex].name;
+        }
+
+        // Avanzar índice (ciclo circular)
+        resetIndex = (resetIndex + 1) % objects.Length;
+
+        // Si volvió al inicio, completó un ciclo
+        if (resetIndex == 0)
+        {
+            resetTotalCount++;
+        }
+
+        syncVersion++;
+        RequestSerialization();
+        _UpdateUI();
     }
 
     // =========================================================
-    //  BOTÓN 2: OCULTAR / MOSTRAR (Toggle Global)
+    //  BOTÓN 2: TOGGLE VISIBILIDAD (uno por uno)
     // =========================================================
-    /// <summary>
-    /// Llama este método desde un UI Button o un Interact Trigger.
-    /// Alterna la visibilidad de todos los objetos de la lista.
-    /// </summary>
-    public void ToggleVisibility()
+    public void StepToggle()
     {
+        if (objects == null || objects.Length == 0) return;
+
         Networking.SetOwner(Networking.LocalPlayer, gameObject);
 
-        isHidden = !isHidden;
-        syncCounter++;
-        RequestSerialization();
+        // Ocultar o mostrar según la fase actual
+        if (isHidingPhase)
+        {
+            _SetObjectVisible(toggleIndex, false);
+            if (objects[toggleIndex] != null)
+            {
+                lastAffectedName = "[Oculto] " + objects[toggleIndex].name;
+            }
+        }
+        else
+        {
+            _SetObjectVisible(toggleIndex, true);
+            if (objects[toggleIndex] != null)
+            {
+                lastAffectedName = "[Visible] " + objects[toggleIndex].name;
+            }
+        }
 
-        // Aplicar localmente de inmediato
-        _ApplyVisibility();
+        // Avanzar índice
+        toggleIndex = (toggleIndex + 1) % objects.Length;
+
+        // Si completó la lista, cambiar de fase
+        if (toggleIndex == 0)
+        {
+            isHidingPhase = !isHidingPhase;
+            toggleTotalCount++;
+        }
+
+        syncVersion++;
+        RequestSerialization();
+        _UpdateUI();
     }
 
     // =========================================================
-    //  SINCRONIZACIÓN - Cuando llegan datos del owner
+    //  SINCRONIZACIÓN
     // =========================================================
     public override void OnDeserialization()
     {
-        // Solo aplicar si el contador cambió (hay nuevos datos)
-        if (syncCounter != lastSyncCounter)
+        if (syncVersion != lastSyncVersion)
         {
-            lastSyncCounter = syncCounter;
-
-            if (requestReset)
-            {
-                _ApplyReset();
-                requestReset = false;
-            }
-
-            _ApplyVisibility();
+            lastSyncVersion = syncVersion;
+            _RebuildState();
+            _UpdateUI();
         }
     }
 
-    // =========================================================
-    //  LATE JOINER - Sincronizar estado al unirse
-    // =========================================================
     public override void OnPlayerJoined(VRCPlayerApi player)
     {
-        // Si soy el owner, re-serializar para el nuevo jugador
         if (Networking.IsOwner(gameObject))
         {
             RequestSerialization();
@@ -135,47 +179,102 @@ public class ObjectManager : UdonSharpBehaviour
     }
 
     // =========================================================
-    //  MÉTODOS INTERNOS
+    //  RECONSTRUIR ESTADO (Late Joiners y Sync)
     // =========================================================
-    private void _ApplyReset()
+    private void _RebuildState()
     {
-        if (objects == null || originalPositions == null) return;
+        if (objects == null) return;
 
-        for (int i = 0; i < objects.Length; i++)
+        // Reconstruir visibilidad basándose en la fase y el índice
+        if (isHidingPhase)
         {
-            if (objects[i] != null)
+            // Fase ocultando: objetos con índice < toggleIndex están ocultos
+            for (int i = 0; i < objects.Length; i++)
             {
-                // Si el objeto tiene VRC Pickup, soltar primero
-                var pickup = (VRC_Pickup)objects[i].GetComponent(typeof(VRC_Pickup));
-                if (pickup != null)
+                if (objects[i] != null)
                 {
-                    pickup.Drop();
+                    objects[i].SetActive(i >= toggleIndex);
                 }
-
-                // Si tiene Rigidbody, resetear velocidad
-                var rb = objects[i].GetComponent<Rigidbody>();
-                if (rb != null)
+            }
+        }
+        else
+        {
+            // Fase mostrando: objetos con índice < toggleIndex están visibles
+            for (int i = 0; i < objects.Length; i++)
+            {
+                if (objects[i] != null)
                 {
-                    rb.velocity = Vector3.zero;
-                    rb.angularVelocity = Vector3.zero;
+                    objects[i].SetActive(i < toggleIndex);
                 }
-
-                objects[i].transform.position = originalPositions[i];
-                objects[i].transform.rotation = originalRotations[i];
             }
         }
     }
 
-    private void _ApplyVisibility()
+    // =========================================================
+    //  MÉTODOS INTERNOS
+    // =========================================================
+    private void _ResetSingleObject(int index)
     {
-        if (objects == null) return;
+        if (objects == null || index < 0 || index >= objects.Length) return;
+        if (objects[index] == null) return;
 
-        for (int i = 0; i < objects.Length; i++)
+        var pickup = (VRC_Pickup)objects[index].GetComponent(typeof(VRC_Pickup));
+        if (pickup != null)
         {
-            if (objects[i] != null)
-            {
-                objects[i].SetActive(!isHidden);
-            }
+            pickup.Drop();
+        }
+
+        var rb = objects[index].GetComponent<Rigidbody>();
+        if (rb != null)
+        {
+            rb.velocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+        }
+
+        objects[index].transform.position = originalPositions[index];
+        objects[index].transform.rotation = originalRotations[index];
+        objects[index].SetActive(true);
+    }
+
+    private void _SetObjectVisible(int index, bool visible)
+    {
+        if (objects == null || index < 0 || index >= objects.Length) return;
+        if (objects[index] == null) return;
+
+        objects[index].SetActive(visible);
+    }
+
+    // =========================================================
+    //  ACTUALIZAR UI
+    // =========================================================
+    private void _UpdateUI()
+    {
+        int total = (objects != null) ? objects.Length : 0;
+
+        if (resetCounterText != null)
+        {
+            resetCounterText.text = string.Format("Ciclos Reset: {0}", resetTotalCount);
+        }
+
+        if (resetProgressText != null)
+        {
+            resetProgressText.text = string.Format("Progreso Reset: {0} / {1}", resetIndex, total);
+        }
+
+        if (toggleCounterText != null)
+        {
+            toggleCounterText.text = string.Format("Ciclos Toggle: {0}", toggleTotalCount);
+        }
+
+        if (toggleProgressText != null)
+        {
+            string phase = isHidingPhase ? "Ocultando" : "Mostrando";
+            toggleProgressText.text = string.Format("{0}: {1} / {2}", phase, toggleIndex, total);
+        }
+
+        if (lastObjectText != null)
+        {
+            lastObjectText.text = lastAffectedName;
         }
     }
 }
