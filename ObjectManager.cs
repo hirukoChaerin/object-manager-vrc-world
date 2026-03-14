@@ -1,22 +1,23 @@
 using UdonSharp;
 using UnityEngine;
-using UnityEngine.UI;
+using TMPro;
 using VRC.SDKBase;
 using VRC.Udon;
 
 /// <summary>
-/// ObjectManager v2 - Paso a paso con contadores
+/// ObjectManager v3 - Usa TextMeshProUGUI (VRC)
 ///
-/// Botón Reset: Cada click resetea UN objeto. Al llegar al final, vuelve al inicio.
-/// Botón Toggle: Cada click oculta UN objeto. Al terminar la lista, cambia de modo
-///               y empieza a mostrar uno por uno.
+/// Botón Reset: Cada click resetea UN objeto (avanza al siguiente).
+/// Botón Toggle: Cada click oculta UN objeto. Al terminar, cambia
+///               de modo y muestra uno por uno.
 ///
-/// Canvas: Muestra contadores y progreso en tiempo real.
+/// Canvas: Usa Text - TextMeshPro (VRC) para los contadores.
 ///
 /// Configuración:
 ///   1. Arrastra los objetos al array "Objects".
-///   2. Arrastra los componentes Text (UI) a los campos del Inspector.
-///   3. Conecta los botones 3D (ResetButton / ToggleButton).
+///   2. En el Canvas crea textos con: UI → Text - TextMeshPro (VRC)
+///   3. Arrastra cada texto TMP al campo correspondiente.
+///   4. Conecta los botones 3D (ResetButton / ToggleButton).
 /// </summary>
 [UdonBehaviourSyncMode(BehaviourSyncMode.Manual)]
 public class ObjectManager : UdonSharpBehaviour
@@ -25,21 +26,21 @@ public class ObjectManager : UdonSharpBehaviour
     [Tooltip("Arrastra aquí los GameObjects (platos, vasos, etc.)")]
     public GameObject[] objects;
 
-    [Header("=== UI Canvas - Textos ===")]
+    [Header("=== UI Canvas - TextMeshPro (VRC) ===")]
     [Tooltip("Muestra cuántos ciclos completos de Reset se han hecho")]
-    public Text resetCounterText;
+    public TextMeshProUGUI resetCounterText;
 
     [Tooltip("Muestra el progreso del Reset (ej: 3/8)")]
-    public Text resetProgressText;
+    public TextMeshProUGUI resetProgressText;
 
     [Tooltip("Muestra cuántos ciclos completos de Toggle se han hecho")]
-    public Text toggleCounterText;
+    public TextMeshProUGUI toggleCounterText;
 
     [Tooltip("Muestra el progreso del Toggle (ej: Ocultando 3/8)")]
-    public Text toggleProgressText;
+    public TextMeshProUGUI toggleProgressText;
 
     [Tooltip("Muestra el nombre del último objeto afectado")]
-    public Text lastObjectText;
+    public TextMeshProUGUI lastObjectText;
 
     // --- Estado sincronizado ---
     [UdonSynced] private int resetIndex = 0;
@@ -98,7 +99,7 @@ public class ObjectManager : UdonSharpBehaviour
         // Guardar nombre del objeto afectado
         if (objects[resetIndex] != null)
         {
-            lastAffectedName = "[R] " + objects[resetIndex].name;
+            lastAffectedName = "<color=#FF6B35>[R]</color> " + objects[resetIndex].name;
         }
 
         // Avanzar índice (ciclo circular)
@@ -124,13 +125,12 @@ public class ObjectManager : UdonSharpBehaviour
 
         Networking.SetOwner(Networking.LocalPlayer, gameObject);
 
-        // Ocultar o mostrar según la fase actual
         if (isHidingPhase)
         {
             _SetObjectVisible(toggleIndex, false);
             if (objects[toggleIndex] != null)
             {
-                lastAffectedName = "[Oculto] " + objects[toggleIndex].name;
+                lastAffectedName = "<color=#FF4444>[Oculto]</color> " + objects[toggleIndex].name;
             }
         }
         else
@@ -138,7 +138,7 @@ public class ObjectManager : UdonSharpBehaviour
             _SetObjectVisible(toggleIndex, true);
             if (objects[toggleIndex] != null)
             {
-                lastAffectedName = "[Visible] " + objects[toggleIndex].name;
+                lastAffectedName = "<color=#44DD44>[Visible]</color> " + objects[toggleIndex].name;
             }
         }
 
@@ -185,10 +185,9 @@ public class ObjectManager : UdonSharpBehaviour
     {
         if (objects == null) return;
 
-        // Reconstruir visibilidad basándose en la fase y el índice
         if (isHidingPhase)
         {
-            // Fase ocultando: objetos con índice < toggleIndex están ocultos
+            // Objetos antes del toggleIndex están ocultos
             for (int i = 0; i < objects.Length; i++)
             {
                 if (objects[i] != null)
@@ -199,7 +198,7 @@ public class ObjectManager : UdonSharpBehaviour
         }
         else
         {
-            // Fase mostrando: objetos con índice < toggleIndex están visibles
+            // Objetos antes del toggleIndex están visibles
             for (int i = 0; i < objects.Length; i++)
             {
                 if (objects[i] != null)
@@ -245,36 +244,56 @@ public class ObjectManager : UdonSharpBehaviour
     }
 
     // =========================================================
-    //  ACTUALIZAR UI
+    //  ACTUALIZAR UI - TextMeshPro (VRC)
     // =========================================================
     private void _UpdateUI()
     {
         int total = (objects != null) ? objects.Length : 0;
 
+        // --- Reset ---
         if (resetCounterText != null)
         {
-            resetCounterText.text = string.Format("Ciclos Reset: {0}", resetTotalCount);
+            resetCounterText.text = string.Format(
+                "Ciclos Reset: <color=#FF6B35>{0}</color>", resetTotalCount
+            );
         }
 
         if (resetProgressText != null)
         {
-            resetProgressText.text = string.Format("Progreso Reset: {0} / {1}", resetIndex, total);
+            resetProgressText.text = string.Format(
+                "Progreso Reset: <color=#FFFFFF>{0}</color> / {1}", resetIndex, total
+            );
         }
 
+        // --- Toggle ---
         if (toggleCounterText != null)
         {
-            toggleCounterText.text = string.Format("Ciclos Toggle: {0}", toggleTotalCount);
+            toggleCounterText.text = string.Format(
+                "Ciclos Toggle: <color=#44AAFF>{0}</color>", toggleTotalCount
+            );
         }
 
         if (toggleProgressText != null)
         {
             string phase = isHidingPhase ? "Ocultando" : "Mostrando";
-            toggleProgressText.text = string.Format("{0}: {1} / {2}", phase, toggleIndex, total);
+            string phaseColor = isHidingPhase ? "#FF4444" : "#44DD44";
+            toggleProgressText.text = string.Format(
+                "<color={0}>{1}</color>: <color=#FFFFFF>{2}</color> / {3}",
+                phaseColor, phase, toggleIndex, total
+            );
         }
 
+        // --- Último objeto ---
         if (lastObjectText != null)
         {
-            lastObjectText.text = lastAffectedName;
+            if (string.IsNullOrEmpty(lastAffectedName))
+            {
+                lastObjectText.text = "Esperando accion...";
+            }
+            else
+            {
+                lastObjectText.text = lastAffectedName;
+            }
         }
     }
 }
