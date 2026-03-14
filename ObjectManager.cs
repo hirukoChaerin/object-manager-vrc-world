@@ -25,7 +25,7 @@ using VRC.Udon;
 public class ObjectManager : UdonSharpBehaviour
 {
     [Header("Lista de Objetos")]
-    [Tooltip("Arrastra aquí los GameObjects que quieres controlar (platos, vasos, etc.)")]
+    [Tooltip("Arrastra aquí los GameObjects que quieres controlar")]
     public GameObject[] objects;
 
     // --- Estado sincronizado ---
